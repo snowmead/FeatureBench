@@ -76,6 +76,19 @@ ANTHROPIC_BASE_URL = ""
 # Optional: Lock Claude Code version (leave empty to use latest)
 CLAUDE_CODE_VERSION = ""
 
+# Shapes-augmented Claude Code Agent Configuration
+[infer_config.shapes_claude_code]
+# Required: Anthropic API Key (same as claude_code)
+ANTHROPIC_API_KEY = ""
+# Optional: Custom API Base URL
+ANTHROPIC_BASE_URL = ""
+# Optional: Lock Claude Code version
+CLAUDE_CODE_VERSION = ""
+# Path to pre-compiled shapes CLI binary (linux/amd64, statically linked)
+SHAPES_BINARY_PATH = ""
+# Bootstrap timeout in seconds (default 300)
+SHAPES_BOOTSTRAP_TIMEOUT = "300"
+
 # Gemini CLI Agent Configuration
 [infer_config.gemini_cli]
 GEMINI_API_KEY = ""

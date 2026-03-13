@@ -5,6 +5,7 @@ Agent implementations for FeatureBench inference.
 from featurebench.infer.agents.base import BaseAgent
 from featurebench.infer.agents.codex import CodexAgent
 from featurebench.infer.agents.claude_code import ClaudeCodeAgent
+from featurebench.infer.agents.shapes_claude_code import ShapesClaudeCodeAgent
 from featurebench.infer.agents.gemini_cli import GeminiCliAgent
 from featurebench.infer.agents.mini_swe_agent import MiniSweAgent
 from featurebench.infer.agents.openhands import OpenHandsAgent
@@ -13,6 +14,7 @@ __all__ = [
     "BaseAgent",
     "CodexAgent",
     "ClaudeCodeAgent",
+    "ShapesClaudeCodeAgent",
     "GeminiCliAgent",
     "MiniSweAgent",
     "OpenHandsAgent"
@@ -33,6 +35,7 @@ def get_agent(agent_name: str, **kwargs) -> BaseAgent:
     agents = {
         "codex": CodexAgent,
         "claude_code": ClaudeCodeAgent,
+        "shapes_claude_code": ShapesClaudeCodeAgent,
         "gemini_cli": GeminiCliAgent,
         "mini_swe_agent": MiniSweAgent,
         "openhands": OpenHandsAgent

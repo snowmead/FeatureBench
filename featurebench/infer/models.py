@@ -13,6 +13,7 @@ import json
 class AgentName(str, Enum):
     """Supported agent names."""
     CLAUDE_CODE = "claude_code"
+    SHAPES_CLAUDE_CODE = "shapes_claude_code"
     GEMINI_CLI = "gemini_cli"
     MINI_SWE_AGENT = "mini_swe_agent"
     OPENHANDS = "openhands"
@@ -174,6 +175,8 @@ class InferConfig:
     force_rerun_ids: Optional[List[str]] = None
     # If True, treat prior TIMEOUT attempts as completed when resuming (skip reruns).
     force_timeout: bool = False
+    # If True, disable GPU for all tasks (useful for running on machines without NVIDIA GPUs).
+    no_gpu: bool = False
     # Optional: CLI overrides for agent auth/endpoint/version.
     api_key: Optional[str] = None
     base_url: Optional[str] = None
@@ -201,6 +204,7 @@ class InferConfig:
             "force_native_tool_calling": self.force_native_tool_calling,
             "force_rerun_ids": self.force_rerun_ids,
             "force_timeout": self.force_timeout,
+            "no_gpu": self.no_gpu,
             "api_key": self.api_key,
             "base_url": self.base_url,
             "version": self.version,

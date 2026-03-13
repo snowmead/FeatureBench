@@ -558,6 +558,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        default=False,
+        help="Disable GPU for all tasks (useful on machines without NVIDIA GPUs)",
+    )
+
     return parser.parse_args()
 
 
@@ -713,6 +720,8 @@ def main():
             docker_runtime_config = get_docker_runtime_config(repo_settings)
         except Exception:
             docker_runtime_config = {}
+        if getattr(args, "no_gpu", False):
+            docker_runtime_config["need_gpu"] = False
         instances_to_eval.append((instance, pred, docker_runtime_config))
 
     if missing_count > 0:

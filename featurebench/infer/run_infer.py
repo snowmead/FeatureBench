@@ -282,6 +282,13 @@ class InferenceRunner:
         
         # Get agent environment variables
         self.agent_env_vars = self.config_loader.get_agent_env_vars(config.agent)
+
+        # Route OAuth tokens: Claude Code uses CLAUDE_CODE_OAUTH_TOKEN for sk-ant-oat tokens
+        _api_key = self.agent_env_vars.get("ANTHROPIC_API_KEY", "")
+        if _api_key and _api_key.startswith("sk-ant-oat"):
+            self.agent_env_vars["CLAUDE_CODE_OAUTH_TOKEN"] = _api_key
+            del self.agent_env_vars["ANTHROPIC_API_KEY"]
+
         if self.cache_dir:
             self.agent_env_vars.setdefault("AGENT_DOWNLOAD_CACHE", "/download")
         if getattr(config, "runtime_proxy", None) is not None:
@@ -291,6 +298,7 @@ class InferenceRunner:
         api_key_map = {
             "openhands": "LLM_API_KEY",
             "claude_code": "ANTHROPIC_API_KEY",
+            "shapes_claude_code": "ANTHROPIC_API_KEY",
             "gemini_cli": "GEMINI_API_KEY",
             "codex": "OPENAI_API_KEY",
             "mini_swe_agent": "MSWEA_API_KEY",
@@ -298,6 +306,7 @@ class InferenceRunner:
         base_url_map = {
             "openhands": "LLM_BASE_URL",
             "claude_code": "ANTHROPIC_BASE_URL",
+            "shapes_claude_code": "ANTHROPIC_BASE_URL",
             "gemini_cli": "GOOGLE_GEMINI_BASE_URL",
             "codex": "OPENAI_BASE_URL",
             "mini_swe_agent": "MSWEA_BASE_URL",
@@ -305,6 +314,7 @@ class InferenceRunner:
         version_map = {
             "openhands": "OPENHANDS_VERSION",
             "claude_code": "CLAUDE_CODE_VERSION",
+            "shapes_claude_code": "CLAUDE_CODE_VERSION",
             "gemini_cli": "GEMINI_CLI_VERSION",
             "codex": "CODEX_VERSION",
             "mini_swe_agent": "MINI_SWE_AGENT_VERSION",
@@ -550,6 +560,8 @@ class InferenceRunner:
             
             # Get docker runtime config from repo_settings
             docker_runtime_config = instance.get_docker_runtime_config()
+            if self.config.no_gpu:
+                docker_runtime_config["need_gpu"] = False
             task_logger.info(f"Docker runtime config: need_gpu={docker_runtime_config.get('need_gpu')}, "
                            f"shm_size={docker_runtime_config.get('shm_size')}, "
                            f"number_once={docker_runtime_config.get('number_once')}, "
@@ -723,6 +735,8 @@ class InferenceRunner:
                 volumes = {str(self.cache_dir): {"bind": "/download", "mode": "rw"}}
 
             docker_runtime_config = instance.get_docker_runtime_config()
+            if self.config.no_gpu:
+                docker_runtime_config["need_gpu"] = False
             task_gpu_ids = self.config.gpu_ids
             if docker_runtime_config.get("need_gpu") and self._gpu_scheduler is not None:
                 requested = docker_runtime_config.get("number_once", 1)
@@ -1106,6 +1120,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         choices=[
             "claude_code",
+            "shapes_claude_code",
             "gemini_cli",
             "openhands",
             "codex",
@@ -1297,6 +1312,13 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated GPU IDs to use (e.g., '0,1,2,3'). Default: all available GPUs"
     )
     
+    parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        default=False,
+        help="Disable GPU for all tasks (useful on machines without NVIDIA GPUs)"
+    )
+
     parser.add_argument(
         "--resume",
         type=str,
@@ -1530,6 +1552,7 @@ def main():
             force_native_tool_calling=bool(getattr(args, "native_tool_calling", False)),
             force_timeout=bool(getattr(args, "force_timeout", False)),
             force_rerun_ids=_load_force_rerun_ids(getattr(args, "force_rerun", None)),
+            no_gpu=bool(getattr(args, "no_gpu", False)),
             api_key=args.api_key,
             base_url=args.base_url,
             version=args.version,

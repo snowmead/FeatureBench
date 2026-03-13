@@ -199,14 +199,20 @@ echo "Claude Code installation complete"
         lines = ["#!/bin/bash", ""]
         
         # Required environment variables
+        api_key = self.env_vars.get("ANTHROPIC_API_KEY", "")
         required_vars = {
-            "ANTHROPIC_API_KEY": self.env_vars.get("ANTHROPIC_API_KEY", ""),
             "FORCE_AUTO_BACKGROUND_TASKS": "1",
             "ENABLE_BACKGROUND_TASKS": "1",
             "DISABLE_TELEMETRY": "1",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         }
-        
+
+        # Route OAuth tokens to CLAUDE_CODE_OAUTH_TOKEN, regular keys to ANTHROPIC_API_KEY
+        if api_key and api_key.startswith("sk-ant-oat"):
+            required_vars["CLAUDE_CODE_OAUTH_TOKEN"] = api_key
+        elif api_key:
+            required_vars["ANTHROPIC_API_KEY"] = api_key
+
         # Add model if specified (CLI only)
         model = self._kwargs.get("model")
         if model:
@@ -222,8 +228,12 @@ echo "Claude Code installation complete"
             required_vars["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
             required_vars["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
         
-        # Add any additional env vars
+        # Add any additional env vars (skip ANTHROPIC_API_KEY if it's an OAuth token,
+        # since we already routed it to CLAUDE_CODE_OAUTH_TOKEN above)
+        is_oauth = api_key and api_key.startswith("sk-ant-oat")
         for key, value in self.env_vars.items():
+            if key == "ANTHROPIC_API_KEY" and is_oauth:
+                continue
             if key not in required_vars and value:
                 required_vars[key] = value
         
