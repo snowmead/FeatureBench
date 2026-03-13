@@ -159,47 +159,95 @@ shapes doctor                                           # Validate store integri
 """
 
 
-BOOTSTRAP_PROMPT = r"""You are analyzing a Python project to create a semantic map of its architecture using the Shapes specification.
+BOOTSTRAP_PROMPT = r"""You are analyzing a Python project to create a deep semantic map of its architecture, patterns, and invariants using the Shapes specification.
 
 The `shapes` CLI is installed at /usr/local/bin/shapes. Read the skill instructions at /testbed/.shapes-skill.md and the spec reference at /testbed/.shapes-spec-reference.md.
 
-Then:
+Your goal is to create a shapes store that would allow a developer who has NEVER seen this codebase to understand:
+- What each module/component does and WHY it exists
+- How data flows through the system
+- What patterns and invariants MUST be upheld when making changes
+- Where the key function boundaries and interfaces are
+- What coding conventions the project follows
 
-1. Explore the codebase: README, directory structure, setup.py/pyproject.toml, key modules and packages
-2. Run `shapes init` to create the .shapes/ directory
-3. Create shapes for each major module/component using `shapes new shape <name> --kind <kind>`:
-   - Edit each generated YAML to fill in:
-     - intent.summary: WHY this module exists
-     - intent.goals: what it accomplishes
-     - intent.non_goals: what it deliberately excludes
-     - realization: which source files implement it (use RealizationBinding format with uris and role)
-   - Promote each shape: `shapes promote <id> --reason "intent mapped"`
-4. Create constraints for cross-cutting invariants using `shapes new constraint <name> --kind <kind>`:
-   - Edit each to set rule, enforcement mode (machine|human|hybrid), and intent
-   - Reference constraint IDs from relevant shapes' constraints lists
-   - Promote each constraint
-5. Wire parent-child relationships between shapes by editing the YAML files directly
+## Process
 
-Focus on boundaries, contracts, and invariants — not trivial implementation details.
-Do NOT attempt to solve any bugs or add features. This is purely structural analysis.
-Keep it concise — 5-15 shapes, 3-7 constraints for a typical repo.
-Run `shapes doctor` at the end to validate store integrity.
+1. **Deep exploration**: Read README, pyproject.toml/setup.py, directory structure, AND key source files in each major module. Read at least 2-3 core source files per module to understand patterns.
+
+2. **Initialize**: Run `shapes init --name <project-name>`
+
+3. **Create architecture shapes** (kind: system, service, module):
+   - One system shape for the project root
+   - Module shapes for each major package/subsystem
+   - Edit YAML: fill intent.summary (WHY), goals, non_goals, realization bindings (file paths)
+   - Set parent-child relationships
+
+4. **Create component shapes** (kind: component, interface):
+   - Key classes and abstractions within each module
+   - Public API surfaces and their contracts
+   - Critical internal components that enforce invariants
+   - Edit YAML: include realization bindings to specific files/classes
+
+5. **Create pattern constraints** (kind: invariant, policy):
+   - Error handling patterns (how does this project handle/propagate errors?)
+   - Import conventions (lazy imports? conditional? star imports?)
+   - Naming conventions (snake_case functions, CamelCase classes, prefixes?)
+   - Testing patterns (fixtures, mocking approach, test organization)
+   - Type annotation patterns (strict typing? optional? runtime checked?)
+
+6. **Create data flow constraints** (kind: invariant):
+   - Input validation patterns (where and how is input validated?)
+   - State management (mutable vs immutable, thread safety patterns)
+   - Serialization/deserialization contracts
+   - Configuration loading patterns
+
+7. **Create boundary constraints** (kind: requirement):
+   - Module boundaries that must not be crossed (no circular imports, layer violations)
+   - Public vs private API boundaries
+   - Backward compatibility requirements
+
+8. **Promote all entities**: `shapes promote <id> --reason "..."` with specific reasons
+
+9. **Validate**: Run `shapes doctor`
+
+## Guidelines
+- Create 20-40 shapes and 10-20 constraints for thorough coverage
+- Every shape MUST have realization bindings (file paths) so the developer knows WHERE to look
+- Every constraint MUST have a concrete rule description, not vague guidelines
+- Focus on what a developer needs to know to make CORRECT changes, not just architectural overview
+- Do NOT attempt to solve any bugs or add features — this is purely structural analysis
 """
 
 
 CLAUDE_MD_CONTENT = r"""# Project Architecture (Shapes)
 
-This project has been analyzed and mapped with shapes and constraints in `.shapes/`.
+This project has been analyzed and a semantic map of its architecture is stored in `.shapes/`.
 
-Before making changes, read the shapes to understand:
-- Module boundaries and intent: `.shapes/shapes/*.yaml`
-- Cross-cutting invariants and constraints: `.shapes/constraints/*.yaml`
-- Which files implement which concerns (realization bindings in each shape)
-- Parent-child relationships between modules
+## How to Use
 
-Start by running `shapes tree` for a hierarchy overview, then `shapes show <id>`
-for the specific shapes relevant to the files you need to modify.
-Use `shapes list --format yaml` for a machine-readable index.
+The `shapes` CLI is available at `/usr/local/bin/shapes`. Use it to understand the codebase:
+
+```bash
+shapes tree                          # See the full shape hierarchy
+shapes tree <id>                     # See subtree rooted at a shape
+shapes list                          # List all shapes and constraints
+shapes list --kind constraint        # List only constraints (patterns/invariants)
+shapes list --kind shape             # List only shapes (modules/components)
+shapes show <id>                     # Full details of a specific shape or constraint
+shapes show <id> --format yaml       # Machine-readable output
+```
+
+## What Shapes Tell You
+- **Shapes** describe modules, components, and interfaces — what they do, why they exist, and which files implement them (realization bindings)
+- **Constraints** describe patterns and invariants that MUST be upheld — error handling, naming conventions, data flow rules, module boundaries
+
+## Before Making Changes
+1. Run `shapes tree` for the hierarchy
+2. Run `shapes list --kind constraint` to see all invariants
+3. Use `shapes show <id>` for shapes relevant to the files you're modifying
+4. Respect the constraints in your implementation
+
+Do NOT modify any files in `.shapes/` or this CLAUDE.md file.
 """
 
 
@@ -209,10 +257,10 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
     Before the task-solving Claude Code session runs, this agent:
     1. Copies the pre-compiled shapes CLI binary into the container
     2. Writes the shapes spec reference and skill instructions
-    3. Runs a separate Claude Code session to bootstrap .shapes/
-    4. Captures shapes context (tree + YAML content) for injection into the task prompt
-    5. Writes a CLAUDE.md instructing the task agent to use shapes
-    6. Amends the initial git commit to include .shapes/ in the baseline
+    3. Runs a separate Claude Code session to bootstrap .shapes/ with deep analysis
+    4. Verifies shapes were created (agent queries them via CLI on demand)
+    5. Writes a CLAUDE.md teaching the task agent the shapes CLI commands
+    6. Amends the initial git commit to exclude .shapes/ from the patch
     """
 
     def __init__(self, *args, **kwargs):
@@ -224,23 +272,27 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         return "shapes_claude_code"
 
     def get_run_command(self, instruction: str) -> str:
-        """Override to inject shapes context into both the user prompt and system prompt.
+        """Override to prepend shapes CLI usage directive to the user prompt.
 
-        The shapes context goes into --append-system-prompt for background reference,
-        and a short acknowledgment directive is prepended to the -p user prompt to
-        ensure the agent engages with it before starting work.
+        Instead of injecting shapes YAML into the system prompt (which pollutes
+        every API call with ~15k chars), we direct the agent to use the `shapes`
+        CLI to query relevant context on demand. The shapes store lives on disk
+        at /testbed/.shapes/ and CLAUDE.md teaches the agent the CLI commands.
         """
         full_instruction = instruction.rstrip()
         allowed_tools = " ".join(self.ALLOWED_TOOLS)
 
         if self._shapes_context:
-            # Prepend acknowledgment directive to the user prompt
             shapes_preamble = (
-                "BEFORE you begin working on the task below, you MUST first:\n"
-                "1. Read the architectural context in your system prompt (Project Architecture / Shapes)\n"
-                "2. List the shapes and constraints you see\n"
-                "3. Identify which shapes are relevant to this task and note their realization bindings\n"
-                "4. Then proceed with the task\n\n"
+                "This project has a `.shapes/` directory containing a semantic map of its "
+                "architecture, patterns, and constraints. You MUST use the `shapes` CLI to "
+                "understand the codebase before making changes.\n\n"
+                "## Required Steps\n"
+                "1. Run `shapes tree` to see the project's shape hierarchy\n"
+                "2. Run `shapes list --kind constraint` to see all constraints/invariants\n"
+                "3. Run `shapes show <id>` for shapes relevant to the files you need to modify\n"
+                "4. Read the constraint rules — these are patterns you MUST uphold in your changes\n"
+                "5. Then proceed with the task, respecting the constraints and module boundaries\n\n"
                 "IMPORTANT: Do NOT create, modify, or delete any files in the .shapes/ directory. "
                 "Do NOT modify CLAUDE.md. These are read-only reference files.\n\n"
                 "---\n\n"
@@ -254,20 +306,6 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
             f'[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true; '
             f"claude --verbose "
             f"-p {escaped_instruction} --allowedTools {allowed_tools} "
-        )
-
-        if self._shapes_context:
-            shapes_system_prompt = (
-                "## Project Architecture (Shapes)\n\n"
-                "This project has been analyzed and mapped with shapes and constraints. "
-                "Use this structural context to understand module boundaries, intent, "
-                "and invariants before making changes.\n\n"
-                f"{self._shapes_context}"
-            )
-            escaped_system = shlex.quote(shapes_system_prompt)
-            cmd += f"--append-system-prompt {escaped_system} "
-
-        cmd += (
             f"--output-format stream-json "
             f"| tee /agent-logs/claude_code_stream_output.jsonl"
         )
@@ -354,6 +392,9 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
             )
 
             # --- 3. Run Claude Code with bootstrap prompt ---
+            # Create /agent-logs/ before bootstrap so tee doesn't fail
+            self.cm.exec_command(container, "mkdir -p /agent-logs", log_file=log_file)
+
             bootstrap_timeout = int(
                 self.env_vars.get("SHAPES_BOOTSTRAP_TIMEOUT", "1800")
             )
@@ -414,10 +455,10 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                     f"[shapes] Captured {len(self._shapes_context)} chars of shapes context"
                 )
 
-                # Log the full shapes context for verification
+                # Log the shapes list for verification
                 with open(log_file, "a", encoding="utf-8") as f:
                     f.write("\n" + "-" * 60 + "\n")
-                    f.write("SHAPES CONTEXT INJECTED VIA --append-system-prompt:\n")
+                    f.write("SHAPES AVAILABLE (agent will query via CLI):\n")
                     f.write("-" * 60 + "\n")
                     f.write(self._shapes_context)
                     f.write("\n" + "-" * 60 + "\n\n")
@@ -473,46 +514,18 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         container: Container,
         log_file: Path,
     ) -> str:
-        """Read shapes tree and YAML content from the container.
+        """Check if shapes were created and return a truthy string if so.
 
-        Returns a text block suitable for injection into the task prompt.
+        We no longer inject shapes YAML into the prompt. Instead, the agent
+        queries the shapes CLI on demand. This method just checks that the
+        shapes store has content (used as a boolean flag for the preamble).
         """
-        parts: list[str] = []
-
-        # 1. shapes tree — hierarchy overview
-        exit_code, tree_out = self.cm.exec_command(
+        exit_code, output = self.cm.exec_command(
             container,
-            "cd /testbed && /usr/local/bin/shapes tree 2>/dev/null || true",
+            "cd /testbed && /usr/local/bin/shapes list 2>/dev/null",
             log_file=log_file,
         )
-        if tree_out and tree_out.strip():
-            parts.append(f"### Shapes Hierarchy\n```\n{tree_out.strip()}\n```")
-
-        # 2. Concatenate all shape YAML files
-        exit_code, shapes_out = self.cm.exec_command(
-            container,
-            "cd /testbed && for f in .shapes/shapes/*.yaml; do "
-            "[ -f \"$f\" ] && echo \"--- $f ---\" && cat \"$f\" && echo; "
-            "done 2>/dev/null || true",
-            log_file=log_file,
-        )
-        if shapes_out and shapes_out.strip():
-            parts.append(f"### Shape Definitions\n```yaml\n{shapes_out.strip()}\n```")
-
-        # 3. Concatenate all constraint YAML files
-        exit_code, constraints_out = self.cm.exec_command(
-            container,
-            "cd /testbed && for f in .shapes/constraints/*.yaml; do "
-            "[ -f \"$f\" ] && echo \"--- $f ---\" && cat \"$f\" && echo; "
-            "done 2>/dev/null || true",
-            log_file=log_file,
-        )
-        if constraints_out and constraints_out.strip():
-            parts.append(
-                f"### Constraint Definitions\n```yaml\n{constraints_out.strip()}\n```"
-            )
-
-        return "\n\n".join(parts)
+        return output.strip() if output else ""
 
     def _write_file_in_container(
         self,
