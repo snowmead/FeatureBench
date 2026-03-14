@@ -216,38 +216,47 @@ Your goal is to create a shapes store that would allow a developer who has NEVER
 - Every constraint MUST have a concrete rule description, not vague guidelines
 - Focus on what a developer needs to know to make CORRECT changes, not just architectural overview
 - Do NOT attempt to solve any bugs or add features — this is purely structural analysis
+- CRITICAL: After creating and editing all entities, verify NONE have TODO placeholders.
+  Run: `grep -r "TODO" .shapes/` — if any TODOs remain, edit those files to fill in
+  the actual content based on your analysis of the codebase. Every constraint MUST have
+  a concrete, specific `rule:` field describing the actual pattern (not a TODO placeholder).
+  Every shape MUST have a real `intent.summary:` describing why it exists (not a TODO).
+  Do NOT promote any entity that still contains TODO placeholders.
 """
 
 
 CLAUDE_MD_CONTENT = r"""# Project Architecture (Shapes)
 
-This project has been analyzed and a semantic map of its architecture is stored in `.shapes/`.
+This project's architecture, patterns, and constraints are mapped in `.shapes/`.
+The shape hierarchy is in your system prompt. Use the `shapes` CLI for details.
 
-## How to Use
+## Core Workflow
 
-The `shapes` CLI is available at `/usr/local/bin/shapes`. Use it to understand the codebase:
-
+**Every time you modify a file**, look up its parent shape:
 ```bash
-shapes tree                          # See the full shape hierarchy
-shapes tree <id>                     # See subtree rooted at a shape
-shapes list                          # List all shapes and constraints
-shapes list --kind constraint        # List only constraints (patterns/invariants)
-shapes list --kind shape             # List only shapes (modules/components)
-shapes show <id>                     # Full details of a specific shape or constraint
-shapes show <id> --format yaml       # Machine-readable output
+shapes show <shape-id>              # See intent, goals, realization bindings
+shapes show <shape-id> --format yaml  # Machine-readable
 ```
 
-## What Shapes Tell You
-- **Shapes** describe modules, components, and interfaces — what they do, why they exist, and which files implement them (realization bindings)
-- **Constraints** describe patterns and invariants that MUST be upheld — error handling, naming conventions, data flow rules, module boundaries
+**Every time you implement a pattern** (error handling, imports, serialization, etc.),
+check if a constraint governs it:
+```bash
+shapes show <constraint-id>         # See the rule you must follow
+```
 
-## Before Making Changes
-1. Run `shapes tree` for the hierarchy
-2. Run `shapes list --kind constraint` to see all invariants
-3. Use `shapes show <id>` for shapes relevant to the files you're modifying
-4. Respect the constraints in your implementation
+## What's in a Shape
+- **intent.summary** — WHY this module/component exists
+- **intent.goals** — what it accomplishes
+- **intent.non_goals** — what it deliberately excludes
+- **realization** — which files implement it (use these to find related code)
+- **constraints** — which constraints apply to this module
 
-Do NOT modify any files in `.shapes/` or this CLAUDE.md file.
+## What's in a Constraint
+- **rule** — the specific pattern or invariant you MUST follow
+- **enforcement** — machine (automated), human (review), or hybrid
+- **realization** — files where this constraint is enforced
+
+Do NOT modify `.shapes/` or CLAUDE.md.
 """
 
 
@@ -272,27 +281,33 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         return "shapes_claude_code"
 
     def get_run_command(self, instruction: str) -> str:
-        """Override to prepend shapes CLI usage directive to the user prompt.
+        """Override to inject shapes context and continuous-consultation directive.
 
-        Instead of injecting shapes YAML into the system prompt (which pollutes
-        every API call with ~15k chars), we direct the agent to use the `shapes`
-        CLI to query relevant context on demand. The shapes store lives on disk
-        at /testbed/.shapes/ and CLAUDE.md teaches the agent the CLI commands.
+        Injects a compact shapes overview (~1-2k chars) into --append-system-prompt
+        for constant hierarchy visibility, and prepends a directive to the user
+        prompt that tells the agent to consult shapes before every modification —
+        not just once at the start.
         """
         full_instruction = instruction.rstrip()
         allowed_tools = " ".join(self.ALLOWED_TOOLS)
 
         if self._shapes_context:
             shapes_preamble = (
-                "This project has a `.shapes/` directory containing a semantic map of its "
-                "architecture, patterns, and constraints. You MUST use the `shapes` CLI to "
-                "understand the codebase before making changes.\n\n"
-                "## Required Steps\n"
-                "1. Run `shapes tree` to see the project's shape hierarchy\n"
-                "2. Run `shapes list --kind constraint` to see all constraints/invariants\n"
-                "3. Run `shapes show <id>` for shapes relevant to the files you need to modify\n"
-                "4. Read the constraint rules — these are patterns you MUST uphold in your changes\n"
-                "5. Then proceed with the task, respecting the constraints and module boundaries\n\n"
+                "This project has a `.shapes/` directory with its architecture, patterns, and "
+                "constraints mapped. The shape hierarchy and constraints are in your system prompt "
+                "for reference. You MUST consult shapes throughout your work — not just at the start.\n\n"
+                "## Shapes Workflow\n\n"
+                "**Before modifying any file:** Run `shapes show <id>` for the shape whose "
+                "realization bindings include that file. This tells you the module's intent, "
+                "goals, and what constraints apply.\n\n"
+                "**Before implementing any pattern:** Check constraints for how this project "
+                "handles it (error handling, imports, naming, serialization, etc.). Run "
+                "`shapes show <constraint-id>` and follow the constraint's rule.\n\n"
+                "**When stuck or unsure:** Use `shapes show` to understand how modules connect, "
+                "what their boundaries are, and which files belong to which component.\n\n"
+                "**Key commands:**\n"
+                "- `shapes show <id>` — full details including realization bindings (file paths)\n"
+                "- `shapes show <id> --format yaml` — machine-readable output\n\n"
                 "IMPORTANT: Do NOT create, modify, or delete any files in the .shapes/ directory. "
                 "Do NOT modify CLAUDE.md. These are read-only reference files.\n\n"
                 "---\n\n"
@@ -306,6 +321,19 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
             f'[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true; '
             f"claude --verbose "
             f"-p {escaped_instruction} --allowedTools {allowed_tools} "
+        )
+
+        if self._shapes_context:
+            shapes_system_prompt = (
+                "# Project Architecture (Shapes)\n\n"
+                "This project has a `.shapes/` store with its architecture mapped.\n"
+                "Use `shapes show <id>` to get full details for any shape or constraint.\n\n"
+                f"{self._shapes_context}"
+            )
+            escaped_system = shlex.quote(shapes_system_prompt)
+            cmd += f"--append-system-prompt {escaped_system} "
+
+        cmd += (
             f"--output-format stream-json "
             f"| tee /agent-logs/claude_code_stream_output.jsonl"
         )
@@ -455,10 +483,10 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                     f"[shapes] Captured {len(self._shapes_context)} chars of shapes context"
                 )
 
-                # Log the shapes list for verification
+                # Log the compact context injected into system prompt
                 with open(log_file, "a", encoding="utf-8") as f:
                     f.write("\n" + "-" * 60 + "\n")
-                    f.write("SHAPES AVAILABLE (agent will query via CLI):\n")
+                    f.write("COMPACT SHAPES CONTEXT (injected via --append-system-prompt):\n")
                     f.write("-" * 60 + "\n")
                     f.write(self._shapes_context)
                     f.write("\n" + "-" * 60 + "\n\n")
@@ -514,18 +542,33 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         container: Container,
         log_file: Path,
     ) -> str:
-        """Check if shapes were created and return a truthy string if so.
+        """Capture compact shapes overview for system prompt injection.
 
-        We no longer inject shapes YAML into the prompt. Instead, the agent
-        queries the shapes CLI on demand. This method just checks that the
-        shapes store has content (used as a boolean flag for the preamble).
+        Returns the shapes tree + constraint list (~1-2k chars total).
+        The agent uses this for constant hierarchy visibility, then
+        queries `shapes show <id>` via CLI for detailed info on demand.
         """
-        exit_code, output = self.cm.exec_command(
+        parts: list[str] = []
+
+        # 1. shapes tree — compact hierarchy overview
+        exit_code, tree_out = self.cm.exec_command(
             container,
-            "cd /testbed && /usr/local/bin/shapes list 2>/dev/null",
+            "cd /testbed && /usr/local/bin/shapes tree 2>/dev/null || true",
             log_file=log_file,
         )
-        return output.strip() if output else ""
+        if tree_out and tree_out.strip():
+            parts.append(f"## Shape Hierarchy\n```\n{tree_out.strip()}\n```")
+
+        # 2. Constraint names (compact listing, not full YAML)
+        exit_code, constraints_out = self.cm.exec_command(
+            container,
+            "cd /testbed && /usr/local/bin/shapes list --kind constraint 2>/dev/null || true",
+            log_file=log_file,
+        )
+        if constraints_out and constraints_out.strip():
+            parts.append(f"## Constraints\n```\n{constraints_out.strip()}\n```")
+
+        return "\n\n".join(parts)
 
     def _write_file_in_container(
         self,
