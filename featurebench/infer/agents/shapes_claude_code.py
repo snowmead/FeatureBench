@@ -323,21 +323,22 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         return "shapes_claude_code"
 
     def get_run_command(self, instruction: str) -> str:
-        """Override to inject shapes context and continuous-consultation directive.
+        """Override to inject shapes context and consultation directive.
 
         Injects a compact shapes overview (~1-2k chars) into --append-system-prompt
-        for constant hierarchy visibility, and prepends a directive to the user
-        prompt that tells the agent to consult shapes before every modification —
-        not just once at the start.
+        for constant hierarchy visibility, and APPENDS shapes instructions AFTER
+        the task description so they're the last thing the agent reads (recency bias).
         """
         full_instruction = instruction.rstrip()
         allowed_tools = " ".join(self.ALLOWED_TOOLS)
 
         if self._shapes_context:
-            shapes_preamble = (
+            shapes_appendix = (
+                "\n\n---\n\n"
+                "## Project Shapes (Architecture Map)\n\n"
                 "This project has a `.shapes/` directory with its architecture, patterns, and "
                 "constraints mapped. The shape hierarchy and constraints are in your system prompt.\n\n"
-                "## How to Use Shapes\n\n"
+                "### How to Use Shapes\n\n"
                 "**Finding source files:** Run `shapes show <id>` and check `realization` bindings — "
                 "these map to the source files that implement each shape.\n\n"
                 "**Finding test files:** Run `shapes show <id>` and check `evidence` entries — "
@@ -350,10 +351,9 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                 "Run `shapes show` for that file's parent shape. Re-read its intent and constraints. "
                 "Check if you're working in the right module and following the right patterns.\n\n"
                 "IMPORTANT: Do NOT create, modify, or delete any files in the .shapes/ directory. "
-                "Do NOT modify CLAUDE.md. These are read-only reference files.\n\n"
-                "---\n\n"
+                "Do NOT modify CLAUDE.md. These are read-only reference files."
             )
-            full_instruction = shapes_preamble + full_instruction
+            full_instruction = full_instruction + shapes_appendix
 
         escaped_instruction = shlex.quote(full_instruction)
 
