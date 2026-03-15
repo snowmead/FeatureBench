@@ -323,35 +323,47 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         return "shapes_claude_code"
 
     def get_run_command(self, instruction: str) -> str:
-        """Override to inject shapes context and consultation directive.
+        """Override to append shapes exploration instructions after the task.
 
-        Injects a compact shapes overview (~1-2k chars) into --append-system-prompt
-        for constant hierarchy visibility, and APPENDS shapes instructions AFTER
-        the task description so they're the last thing the agent reads (recency bias).
+        No shapes content is injected into the system prompt — the agent must
+        discover the architecture by using the shapes CLI itself. Instructions
+        are appended AFTER the task description (recency bias) and wrapped in
+        <system_instructions> tags for higher adherence.
         """
         full_instruction = instruction.rstrip()
         allowed_tools = " ".join(self.ALLOWED_TOOLS)
 
         if self._shapes_context:
             shapes_appendix = (
-                "\n\n---\n\n"
+                "\n\n<system_instructions>\n"
                 "## Project Shapes (Architecture Map)\n\n"
                 "This project has a `.shapes/` directory with its architecture, patterns, and "
-                "constraints mapped. The shape hierarchy and constraints are in your system prompt.\n\n"
-                "### How to Use Shapes\n\n"
-                "**Finding source files:** Run `shapes show <id>` and check `realization` bindings — "
-                "these map to the source files that implement each shape.\n\n"
-                "**Finding test files:** Run `shapes show <id>` and check `evidence` entries — "
-                "entries with `type: test_report` point to the test files that verify each shape. "
-                "Use these to find the RIGHT tests to run for the module you're working on.\n\n"
-                "**Understanding patterns:** Before implementing error handling, imports, serialization, "
-                "or other patterns, run `shapes show <constraint-id>`. The `rule` field describes "
-                "exactly how this project handles it.\n\n"
-                "**When you're stuck:** If you've edited a file 3+ times without success, STOP. "
-                "Run `shapes show` for that file's parent shape. Re-read its intent and constraints. "
-                "Check if you're working in the right module and following the right patterns.\n\n"
-                "IMPORTANT: Do NOT create, modify, or delete any files in the .shapes/ directory. "
-                "Do NOT modify CLAUDE.md. These are read-only reference files."
+                "constraints mapped as a DAG (directed acyclic graph). You MUST use the `shapes` "
+                "CLI to explore it thoroughly before and during your work.\n\n"
+                "### Understanding the Full DAG\n"
+                "1. Run `shapes tree` to see the full shape hierarchy\n"
+                "2. For each shape relevant to your task, run `shapes show <id>` to see:\n"
+                "   - **parents**: what broader system/module this belongs to\n"
+                "   - **children**: what sub-components it contains\n"
+                "   - **constraints**: what invariants and patterns apply\n"
+                "   - **realization**: which source files implement it\n"
+                "   - **evidence**: which test files verify it (type: test_report)\n"
+                "3. Traverse UP the DAG (parents) to understand broader context and system-level constraints\n"
+                "4. Traverse DOWN the DAG (children) to understand sub-components and their boundaries\n"
+                "5. Run `shapes show <constraint-id>` for each constraint to read its `rule` — "
+                "these describe exactly how this project handles error handling, imports, naming, etc.\n"
+                "6. Run `shapes list --kind constraint` to see ALL project-wide invariants\n\n"
+                "### Finding Test Files\n"
+                "Run `shapes show <id>` and check `evidence` entries — "
+                "entries with `type: test_report` point to the test files for that module. "
+                "Use these to find the RIGHT tests to run.\n\n"
+                "### When You're Stuck\n"
+                "If you've edited a file 3+ times without success, STOP. "
+                "Run `shapes show` for that file's parent shape. Traverse up and down the DAG. "
+                "Re-read intent, constraints, and realization bindings. "
+                "Check if you're in the right module and following the right patterns.\n\n"
+                "IMPORTANT: Do NOT modify any files in `.shapes/` or CLAUDE.md.\n"
+                "</system_instructions>"
             )
             full_instruction = full_instruction + shapes_appendix
 
@@ -362,19 +374,6 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
             f'[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true; '
             f"claude --verbose "
             f"-p {escaped_instruction} --allowedTools {allowed_tools} "
-        )
-
-        if self._shapes_context:
-            shapes_system_prompt = (
-                "# Project Architecture (Shapes)\n\n"
-                "This project has a `.shapes/` store with its architecture mapped.\n"
-                "Use `shapes show <id>` to get full details for any shape or constraint.\n\n"
-                f"{self._shapes_context}"
-            )
-            escaped_system = shlex.quote(shapes_system_prompt)
-            cmd += f"--append-system-prompt {escaped_system} "
-
-        cmd += (
             f"--output-format stream-json "
             f"| tee /agent-logs/claude_code_stream_output.jsonl"
         )
@@ -392,7 +391,8 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         """
         self.cm.exec_command(
             container,
-            "rm -rf /testbed/.shapes /testbed/CLAUDE.md",
+            "rm -rf /testbed/.shapes /testbed/CLAUDE.md && "
+            "cd /testbed && git checkout -- .gitignore 2>/dev/null || true",
             log_file=log_file,
         )
         return True
@@ -524,10 +524,10 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                     f"[shapes] Captured {len(self._shapes_context)} chars of shapes context"
                 )
 
-                # Log the compact context injected into system prompt
+                # Log what shapes are available (agent will explore via CLI)
                 with open(log_file, "a", encoding="utf-8") as f:
                     f.write("\n" + "-" * 60 + "\n")
-                    f.write("COMPACT SHAPES CONTEXT (injected via --append-system-prompt):\n")
+                    f.write("SHAPES AVAILABLE (agent will explore via CLI):\n")
                     f.write("-" * 60 + "\n")
                     f.write(self._shapes_context)
                     f.write("\n" + "-" * 60 + "\n\n")
@@ -583,33 +583,18 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         container: Container,
         log_file: Path,
     ) -> str:
-        """Capture compact shapes overview for system prompt injection.
+        """Check if shapes were created and return a truthy string if so.
 
-        Returns the shapes tree + constraint list (~1-2k chars total).
-        The agent uses this for constant hierarchy visibility, then
-        queries `shapes show <id>` via CLI for detailed info on demand.
+        No content is injected into the prompt — the agent discovers shapes
+        by using the CLI itself. This just checks shapes exist (boolean flag
+        for whether to include the shapes appendix instruction).
         """
-        parts: list[str] = []
-
-        # 1. shapes tree — compact hierarchy overview
-        exit_code, tree_out = self.cm.exec_command(
+        exit_code, output = self.cm.exec_command(
             container,
-            "cd /testbed && /usr/local/bin/shapes tree 2>/dev/null || true",
+            "cd /testbed && /usr/local/bin/shapes list 2>/dev/null",
             log_file=log_file,
         )
-        if tree_out and tree_out.strip():
-            parts.append(f"## Shape Hierarchy\n```\n{tree_out.strip()}\n```")
-
-        # 2. Constraint names (compact listing, not full YAML)
-        exit_code, constraints_out = self.cm.exec_command(
-            container,
-            "cd /testbed && /usr/local/bin/shapes list --kind constraint 2>/dev/null || true",
-            log_file=log_file,
-        )
-        if constraints_out and constraints_out.strip():
-            parts.append(f"## Constraints\n```\n{constraints_out.strip()}\n```")
-
-        return "\n\n".join(parts)
+        return output.strip() if output else ""
 
     def _write_file_in_container(
         self,
