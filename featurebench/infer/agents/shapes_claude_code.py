@@ -88,6 +88,7 @@ Constraint:
   status: proposed | promoted | canonical | rejected | abandoned | reverted
   intent: Intent
   realization: [RealizationBinding]?
+  evidence: [EvidenceRef]?
 ```
 
 ## Lifecycle States
@@ -102,10 +103,19 @@ Transitions: proposed -> promoted -> canonical (or terminal states: rejected, ab
 
 ## Realization & Evidence
 
+Realization answers: "What artifacts IMPLEMENT this Shape?" (source files, configs, APIs)
+Evidence answers: "What PROVES this Shape works?" (test files, benchmarks, reviews)
+
 ```yaml
 RealizationBinding:
-  uris: [string]              # file paths, URLs, other Shape IDs
+  uris: [string]              # file paths to source/implementation files
   role: primary | supporting | interface | verification | migration | docs
+
+EvidenceRef:
+  id: string                  # unique identifier for this evidence
+  type: test_report | review | benchmark | attestation
+  uris: [string]              # file paths to test files, CI reports, etc.
+  trusted: boolean?            # whether this evidence source is trusted
 ```
 """
 
@@ -147,7 +157,10 @@ shapes doctor                                           # Validate store integri
 5. Create constraints with `shapes new constraint <name> --kind <kind>`
 6. Edit to set rule, enforcement, and intent
 7. Promote constraints
-8. Run `shapes doctor` to validate
+8. Add evidence entries to shapes (test file mappings):
+   - For each shape, find corresponding test files
+   - Edit YAML to add: evidence: [{id: "tests-<name>", type: test_report, uris: [test file paths]}]
+9. Run `shapes doctor` to validate
 
 ## YAML Conventions
 
@@ -179,14 +192,15 @@ Your goal is to create a shapes store that would allow a developer who has NEVER
 3. **Create architecture shapes** (kind: system, service, module):
    - One system shape for the project root
    - Module shapes for each major package/subsystem
-   - Edit YAML: fill intent.summary (WHY), goals, non_goals, realization bindings (file paths)
+   - Edit YAML: fill intent.summary (WHY), goals, non_goals
+   - Add realization bindings for SOURCE files only (not test files)
    - Set parent-child relationships
 
 4. **Create component shapes** (kind: component, interface):
    - Key classes and abstractions within each module
    - Public API surfaces and their contracts
    - Critical internal components that enforce invariants
-   - Edit YAML: include realization bindings to specific files/classes
+   - Edit YAML: include realization bindings to specific source files/classes
 
 5. **Create pattern constraints** (kind: invariant, policy):
    - Error handling patterns (how does this project handle/propagate errors?)
@@ -206,22 +220,37 @@ Your goal is to create a shapes store that would allow a developer who has NEVER
    - Public vs private API boundaries
    - Backward compatibility requirements
 
-8. **Promote all entities**: `shapes promote <id> --reason "..."` with specific reasons
+8. **Map test files to shapes via evidence**:
+   - For each module/component shape, find its corresponding test files
+   - Edit the shape YAML to add evidence entries pointing to test files:
+     ```yaml
+     evidence:
+       - id: tests-<shape-name>
+         type: test_report
+         uris:
+           - tests/test_module.py
+           - tests/subdir/test_feature.py
+     ```
+   - This is critical — it allows developers to find which tests verify which modules
+   - Test files go in `evidence` (proof the shape works), NOT in `realization` (implementation)
 
-9. **Validate**: Run `shapes doctor`
+9. **Promote all entities**: `shapes promote <id> --reason "..."` with specific reasons
+
+10. **Validate**: Run `shapes doctor`
 
 ## Guidelines
 - Create 20-40 shapes and 10-20 constraints for thorough coverage
-- Every shape MUST have realization bindings (file paths) so the developer knows WHERE to look
+- Every shape MUST have realization bindings (source file paths) so the developer knows WHERE to look
+- Every shape SHOULD have evidence entries mapping to its test files
 - Every constraint MUST have a concrete rule description, not vague guidelines
 - Focus on what a developer needs to know to make CORRECT changes, not just architectural overview
 - Do NOT attempt to solve any bugs or add features — this is purely structural analysis
-- CRITICAL: After creating and editing all entities, verify NONE have TODO placeholders.
-  Run: `grep -r "TODO" .shapes/` — if any TODOs remain, edit those files to fill in
-  the actual content based on your analysis of the codebase. Every constraint MUST have
-  a concrete, specific `rule:` field describing the actual pattern (not a TODO placeholder).
-  Every shape MUST have a real `intent.summary:` describing why it exists (not a TODO).
-  Do NOT promote any entity that still contains TODO placeholders.
+- CRITICAL: After completing all shapes and constraints, verify NO TODO placeholders remain:
+  1. Run: `grep -rn "TODO" .shapes/shapes/ .shapes/constraints/`
+  2. For EVERY file listed, read it and replace all TODO fields with actual content
+  3. Repeat until `grep -rn "TODO" .shapes/` returns zero results
+  Do NOT promote any entity that still has TODO fields.
+  Run this verification one final time before `shapes doctor`.
 """
 
 
@@ -230,31 +259,44 @@ CLAUDE_MD_CONTENT = r"""# Project Architecture (Shapes)
 This project's architecture, patterns, and constraints are mapped in `.shapes/`.
 The shape hierarchy is in your system prompt. Use the `shapes` CLI for details.
 
-## Core Workflow
+## Finding Files
 
-**Every time you modify a file**, look up its parent shape:
-```bash
-shapes show <shape-id>              # See intent, goals, realization bindings
-shapes show <shape-id> --format yaml  # Machine-readable
+Shapes map both source files and test files:
+
+**Source files** are in `realization` bindings:
+```yaml
+realization:
+  - uris: [src/module/core.py, src/module/utils.py]
+    role: primary
 ```
 
-**Every time you implement a pattern** (error handling, imports, serialization, etc.),
-check if a constraint governs it:
-```bash
-shapes show <constraint-id>         # See the rule you must follow
+**Test files** are in `evidence` entries:
+```yaml
+evidence:
+  - id: tests-module
+    type: test_report
+    uris: [tests/test_module.py, tests/test_utils.py]
 ```
 
-## What's in a Shape
-- **intent.summary** — WHY this module/component exists
-- **intent.goals** — what it accomplishes
-- **intent.non_goals** — what it deliberately excludes
-- **realization** — which files implement it (use these to find related code)
-- **constraints** — which constraints apply to this module
+```bash
+shapes show <id>                    # See both realization AND evidence
+shapes show <id> --format yaml      # Machine-readable for parsing paths
+```
 
-## What's in a Constraint
-- **rule** — the specific pattern or invariant you MUST follow
-- **enforcement** — machine (automated), human (review), or hybrid
-- **realization** — files where this constraint is enforced
+## Understanding Patterns
+
+Constraints have a `rule` field describing the pattern you MUST follow:
+```bash
+shapes show <constraint-id>         # Read the rule field
+```
+
+## When You're Stuck
+
+If you've edited a file multiple times without success:
+1. Run `shapes show` for the shape that owns that file
+2. Re-read its intent — are you solving the right problem?
+3. Check its constraints — are you following the right patterns?
+4. Check evidence URIs — are you testing the right files?
 
 Do NOT modify `.shapes/` or CLAUDE.md.
 """
@@ -294,20 +336,19 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         if self._shapes_context:
             shapes_preamble = (
                 "This project has a `.shapes/` directory with its architecture, patterns, and "
-                "constraints mapped. The shape hierarchy and constraints are in your system prompt "
-                "for reference. You MUST consult shapes throughout your work — not just at the start.\n\n"
-                "## Shapes Workflow\n\n"
-                "**Before modifying any file:** Run `shapes show <id>` for the shape whose "
-                "realization bindings include that file. This tells you the module's intent, "
-                "goals, and what constraints apply.\n\n"
-                "**Before implementing any pattern:** Check constraints for how this project "
-                "handles it (error handling, imports, naming, serialization, etc.). Run "
-                "`shapes show <constraint-id>` and follow the constraint's rule.\n\n"
-                "**When stuck or unsure:** Use `shapes show` to understand how modules connect, "
-                "what their boundaries are, and which files belong to which component.\n\n"
-                "**Key commands:**\n"
-                "- `shapes show <id>` — full details including realization bindings (file paths)\n"
-                "- `shapes show <id> --format yaml` — machine-readable output\n\n"
+                "constraints mapped. The shape hierarchy and constraints are in your system prompt.\n\n"
+                "## How to Use Shapes\n\n"
+                "**Finding source files:** Run `shapes show <id>` and check `realization` bindings — "
+                "these map to the source files that implement each shape.\n\n"
+                "**Finding test files:** Run `shapes show <id>` and check `evidence` entries — "
+                "entries with `type: test_report` point to the test files that verify each shape. "
+                "Use these to find the RIGHT tests to run for the module you're working on.\n\n"
+                "**Understanding patterns:** Before implementing error handling, imports, serialization, "
+                "or other patterns, run `shapes show <constraint-id>`. The `rule` field describes "
+                "exactly how this project handles it.\n\n"
+                "**When you're stuck:** If you've edited a file 3+ times without success, STOP. "
+                "Run `shapes show` for that file's parent shape. Re-read its intent and constraints. "
+                "Check if you're working in the right module and following the right patterns.\n\n"
                 "IMPORTANT: Do NOT create, modify, or delete any files in the .shapes/ directory. "
                 "Do NOT modify CLAUDE.md. These are read-only reference files.\n\n"
                 "---\n\n"
