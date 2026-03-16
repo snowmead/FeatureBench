@@ -459,9 +459,17 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
         instance: "TaskInstance",
         log_file: Path,
     ) -> bool:
-        """Bootstrap .shapes/ before the task-solving agent runs."""
+        """Bootstrap .shapes/ before the task-solving agent runs.
+
+        Supports caching: if SHAPES_CACHE_DIR is set and a cached .shapes/
+        exists for this instance_id, it's copied into the container instead
+        of running a full Claude Code bootstrap session. After a fresh
+        bootstrap, the .shapes/ is saved to cache for reuse.
+
+        Set SHAPES_FORCE_BOOTSTRAP=true to re-bootstrap even if cached.
+        """
         self.logger.info(
-            f"[shapes] Bootstrapping shapes for {instance.instance_id}..."
+            f"[shapes] Setting up shapes for {instance.instance_id}..."
         )
 
         with open(log_file, "a", encoding="utf-8") as f:
@@ -502,57 +510,52 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
 
             self.logger.info("[shapes] shapes binary installed successfully")
 
-            # --- 2. Write spec reference and skill instructions ---
-            self._write_file_in_container(
-                container,
-                "/testbed/.shapes-spec-reference.md",
-                SPEC_SUMMARY,
-                log_file,
+            # --- 2. Check cache ---
+            cache_dir = self.env_vars.get("SHAPES_CACHE_DIR", "")
+            force_bootstrap = (
+                self.env_vars.get("SHAPES_FORCE_BOOTSTRAP", "false").lower()
+                == "true"
             )
-            self._write_file_in_container(
-                container,
-                "/testbed/.shapes-skill.md",
-                SKILL_INSTRUCTIONS,
-                log_file,
+            cached_shapes = (
+                Path(cache_dir) / instance.instance_id / ".shapes"
+                if cache_dir
+                else None
             )
-
-            # --- 3. Run Claude Code with bootstrap prompt ---
-            # Create /agent-logs/ before bootstrap so tee doesn't fail
-            self.cm.exec_command(container, "mkdir -p /agent-logs", log_file=log_file)
-
-            bootstrap_timeout = int(
-                self.env_vars.get("SHAPES_BOOTSTRAP_TIMEOUT", "1800")
-            )
-            escaped_prompt = shlex.quote(BOOTSTRAP_PROMPT.strip())
-
-            bootstrap_cmd = (
-                f"NVM_DIR=${{NVM_DIR:-/opt/featurebench/nvm}}; "
-                f'[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true; '
-                f"source /installed-agent/setup-env.sh && cd /testbed && "
-                f"claude --verbose "
-                f"-p {escaped_prompt} "
-                f"--allowedTools Bash Edit Write Read Glob Grep LS "
-                f"--output-format stream-json "
-                f"| tee /agent-logs/shapes_bootstrap_stream.jsonl"
+            use_cache = (
+                cached_shapes is not None
+                and cached_shapes.exists()
+                and not force_bootstrap
             )
 
-            self.logger.info(
-                f"[shapes] Running bootstrap (timeout={bootstrap_timeout}s)..."
-            )
-            exit_code = self.cm.exec_command_stream(
-                container,
-                bootstrap_cmd,
-                log_file=log_file,
-                timeout=bootstrap_timeout,
-            )
-
-            if exit_code != 0:
-                self.logger.warning(
-                    f"[shapes] Bootstrap exited with code {exit_code} "
-                    "(continuing — shapes may be partial)"
+            if use_cache:
+                # --- 2a. Load cached shapes ---
+                self.cm.copy_to_container(
+                    container, cached_shapes, "/testbed/.shapes"
                 )
+                self.logger.info(
+                    f"[shapes] Loaded cached shapes for {instance.instance_id}"
+                )
+            else:
+                # --- 2b. Run full bootstrap ---
+                self._run_bootstrap(container, instance, log_file)
 
-            # --- 4. Verify .shapes/ was created ---
+                # Save to cache for next time
+                if cache_dir:
+                    save_path = Path(cache_dir) / instance.instance_id
+                    save_path.mkdir(parents=True, exist_ok=True)
+                    dest = save_path / ".shapes"
+                    if self.cm.copy_from_container(
+                        container, "/testbed/.shapes", dest
+                    ):
+                        self.logger.info(
+                            f"[shapes] Saved shapes to cache: {dest}"
+                        )
+                    else:
+                        self.logger.warning(
+                            "[shapes] Failed to save shapes to cache"
+                        )
+
+            # --- 3. Verify .shapes/ was created ---
             exit_code, output = self.cm.exec_command(
                 container,
                 "ls /testbed/.shapes/manifest.yaml 2>/dev/null",
@@ -572,7 +575,7 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                 )
                 self.logger.info(f"[shapes] Bootstrap results:\n{tree_output}")
 
-                # --- 4b. Capture shapes context for injection into task prompt ---
+                # Capture shapes context (boolean flag for appendix)
                 self._shapes_context = self._capture_shapes_context(
                     container, log_file
                 )
@@ -580,7 +583,7 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                     f"[shapes] Captured {len(self._shapes_context)} chars of shapes context"
                 )
 
-                # Log what shapes are available (agent will explore via CLI)
+                # Log what shapes are available
                 with open(log_file, "a", encoding="utf-8") as f:
                     f.write("\n" + "-" * 60 + "\n")
                     f.write("SHAPES AVAILABLE (agent will explore via CLI):\n")
@@ -588,7 +591,7 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                     f.write(self._shapes_context)
                     f.write("\n" + "-" * 60 + "\n\n")
 
-            # --- 5. Write CLAUDE.md ---
+            # --- 4. Write CLAUDE.md ---
             self._write_file_in_container(
                 container,
                 "/testbed/CLAUDE.md",
@@ -596,13 +599,7 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                 log_file,
             )
 
-            # --- 6. Clean up and exclude .shapes/ from git tracking ---
-            # Delete bootstrap reference files
-            self.cm.exec_command(
-                container,
-                "rm -f /testbed/.shapes-spec-reference.md /testbed/.shapes-skill.md",
-                log_file=log_file,
-            )
+            # --- 5. Exclude .shapes/ and CLAUDE.md from git tracking ---
             # The bootstrap Claude Code session may have git-added .shapes/ files.
             # Remove them from the index (keep on disk), add to .gitignore, and
             # amend the initial commit so the task patch stays clean.
@@ -633,6 +630,60 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                 f.write("\n" + "=" * 60 + "\n")
                 f.write(f"END Shapes Bootstrap: {instance.instance_id}\n")
                 f.write("=" * 60 + "\n\n")
+
+    def _run_bootstrap(
+        self,
+        container: Container,
+        instance: "TaskInstance",
+        log_file: Path,
+    ) -> None:
+        """Run the full Claude Code bootstrap session to create .shapes/."""
+        # Write spec reference and skill instructions
+        self._write_file_in_container(
+            container, "/testbed/.shapes-spec-reference.md", SPEC_SUMMARY, log_file
+        )
+        self._write_file_in_container(
+            container, "/testbed/.shapes-skill.md", SKILL_INSTRUCTIONS, log_file
+        )
+
+        # Create /agent-logs/ before bootstrap so tee doesn't fail
+        self.cm.exec_command(container, "mkdir -p /agent-logs", log_file=log_file)
+
+        bootstrap_timeout = int(
+            self.env_vars.get("SHAPES_BOOTSTRAP_TIMEOUT", "1800")
+        )
+        escaped_prompt = shlex.quote(BOOTSTRAP_PROMPT.strip())
+
+        bootstrap_cmd = (
+            f"NVM_DIR=${{NVM_DIR:-/opt/featurebench/nvm}}; "
+            f'[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || true; '
+            f"source /installed-agent/setup-env.sh && cd /testbed && "
+            f"claude --verbose "
+            f"-p {escaped_prompt} "
+            f"--allowedTools Bash Edit Write Read Glob Grep LS "
+            f"--output-format stream-json "
+            f"| tee /agent-logs/shapes_bootstrap_stream.jsonl"
+        )
+
+        self.logger.info(
+            f"[shapes] Running bootstrap (timeout={bootstrap_timeout}s)..."
+        )
+        exit_code = self.cm.exec_command_stream(
+            container, bootstrap_cmd, log_file=log_file, timeout=bootstrap_timeout
+        )
+
+        if exit_code != 0:
+            self.logger.warning(
+                f"[shapes] Bootstrap exited with code {exit_code} "
+                "(continuing — shapes may be partial)"
+            )
+
+        # Clean up bootstrap reference files
+        self.cm.exec_command(
+            container,
+            "rm -f /testbed/.shapes-spec-reference.md /testbed/.shapes-skill.md",
+            log_file=log_file,
+        )
 
     def _capture_shapes_context(
         self,
