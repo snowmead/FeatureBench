@@ -307,49 +307,43 @@ Model the project as a DAG (directed acyclic graph) using these levels:
 
 CLAUDE_MD_CONTENT = r"""# Project Architecture (Shapes)
 
-This project's architecture, patterns, and constraints are mapped in `.shapes/`.
-The shape hierarchy is in your system prompt. Use the `shapes` CLI for details.
+This project's architecture is mapped in `.shapes/` as a 5-level DAG:
 
-## Finding Files
+## Shape Hierarchy
+- **system** — the whole project
+- **module/service** — major subsystems
+- **component/feature** — classes, abstractions, public APIs
+- **interface/boundary** — cross-module contracts (MOST IMPORTANT — shows who depends on what)
+- **workflow** — end-to-end data/control flows
 
-Shapes map both source files and test files:
-
-**Source files** are in `realization` bindings:
-```yaml
-realization:
-  - uris: [src/module/core.py, src/module/utils.py]
-    role: primary
-```
-
-**Test files** are in `evidence` entries:
-```yaml
-evidence:
-  - id: tests-module
-    type: test_report
-    uris: [tests/test_module.py, tests/test_utils.py]
-```
-
+## Key Commands
 ```bash
-shapes show <id>                    # See both realization AND evidence
-shapes show <id> --format yaml      # Machine-readable for parsing paths
+shapes tree                          # Full hierarchy
+shapes show <id>                     # Details: intent, realization, evidence, constraints
+shapes show <id> --format yaml       # Machine-readable
+shapes list --kind constraint        # All project-wide invariants
+shapes new amendment '<desc>' --shape <id>  # Propose a change to a shape
+shapes promote <id> --reason '...'   # Mark amendment as implemented
 ```
 
-## Understanding Patterns
+## How to Work with Shapes
 
-Constraints have a `rule` field describing the pattern you MUST follow:
+**Before coding**, propose amendments targeting all affected shapes and constraints:
 ```bash
-shapes show <constraint-id>         # Read the rule field
+# Single amendment can target multiple shapes and constraints:
+shapes new amendment 'add iceberg reader' --shape io-module --shape dataframe-core --constraint serialization-pattern
 ```
+Edit the YAML: set intent (what/why), realization (files to change), affected_paths.
 
-## When You're Stuck
+**During coding**, follow your amendments and check:
+- **realization** bindings → source files to modify
+- **evidence** entries → test files to run (type: test_report, exact file paths)
+- **interface shapes** → role:supporting files are callers that depend on your changes
+- **constraints** → rules you must follow
 
-If you've edited a file multiple times without success:
-1. Run `shapes show` for the shape that owns that file
-2. Re-read its intent — are you solving the right problem?
-3. Check its constraints — are you following the right patterns?
-4. Check evidence URIs — are you testing the right files?
+**After coding**, verify callers and tests, then promote your amendments.
 
-Do NOT modify `.shapes/` or CLAUDE.md.
+Do NOT modify existing shapes/constraints. Only create amendments.
 """
 
 
@@ -388,32 +382,43 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
             shapes_appendix = (
                 "\n\n<system_instructions>\n"
                 "## Project Shapes (Architecture Map)\n\n"
-                "This project has a `.shapes/` directory with its architecture, patterns, and "
-                "constraints mapped as a DAG (directed acyclic graph). You MUST use the `shapes` "
-                "CLI to explore it thoroughly before and during your work.\n\n"
-                "### Understanding the Full DAG\n"
+                "This project has a `.shapes/` directory with its architecture mapped as a DAG. "
+                "You MUST use the `shapes` CLI to explore it and plan your work through amendments.\n\n"
+                "### Step 1: Explore the Architecture\n"
                 "1. Run `shapes tree` to see the full shape hierarchy\n"
-                "2. For each shape relevant to your task, run `shapes show <id>` to see:\n"
-                "   - **parents**: what broader system/module this belongs to\n"
-                "   - **children**: what sub-components it contains\n"
-                "   - **constraints**: what invariants and patterns apply\n"
-                "   - **realization**: which source files implement it\n"
-                "   - **evidence**: which test files verify it (type: test_report)\n"
-                "3. Traverse UP the DAG (parents) to understand broader context and system-level constraints\n"
-                "4. Traverse DOWN the DAG (children) to understand sub-components and their boundaries\n"
-                "5. Run `shapes show <constraint-id>` for each constraint to read its `rule` — "
-                "these describe exactly how this project handles error handling, imports, naming, etc.\n"
-                "6. Run `shapes list --kind constraint` to see ALL project-wide invariants\n\n"
-                "### Finding Test Files\n"
-                "Run `shapes show <id>` and check `evidence` entries — "
-                "entries with `type: test_report` point to the test files for that module. "
-                "Use these to find the RIGHT tests to run.\n\n"
-                "### When You're Stuck\n"
-                "If you've edited a file 3+ times without success, STOP. "
-                "Run `shapes show` for that file's parent shape. Traverse up and down the DAG. "
-                "Re-read intent, constraints, and realization bindings. "
-                "Check if you're in the right module and following the right patterns.\n\n"
-                "IMPORTANT: Do NOT modify any files in `.shapes/` or CLAUDE.md.\n"
+                "2. Run `shapes list --kind constraint` to see all invariants and patterns\n"
+                "3. For shapes relevant to your task, run `shapes show <id>` to see:\n"
+                "   - intent, realization (source files), evidence (test files), constraints\n"
+                "4. For interface shapes, check `role: supporting` in realization — "
+                "these are files that DEPEND ON this shape's exports\n\n"
+                "### Step 2: Propose Amendments (BEFORE writing any code)\n"
+                "Identify ALL shapes and constraints affected by your task, then create amendments:\n"
+                "```bash\n"
+                "# A single amendment can target multiple shapes and constraints:\n"
+                "shapes new amendment '<description>' --shape <id1> --shape <id2> --constraint <id3>\n"
+                "```\n"
+                "Then edit the amendment YAML to fill in:\n"
+                "- intent.summary: what change is needed and why\n"
+                "- intent.goals: specific changes you plan to make\n"
+                "- affected_paths: which fields of the shapes are changing\n"
+                "- realization: files you will create or modify\n\n"
+                "You may create one broad amendment targeting all affected shapes, or multiple "
+                "focused amendments for different aspects of the work. "
+                "This is your implementation plan grounded in the project architecture.\n\n"
+                "### Step 3: Implement Based on Your Amendments\n"
+                "Work through your amendments one at a time. For each:\n"
+                "- Read the target shape's constraints and follow them\n"
+                "- Modify the files listed in your amendment's realization\n"
+                "- Check interface shapes — if you modify an exported function, "
+                "verify the `role: supporting` callers still work\n"
+                "- Check evidence entries to find the right test files to validate against\n\n"
+                "### Step 4: Verify\n"
+                "- Run tests from evidence entries for each affected shape\n"
+                "- Check that interface callers still work\n"
+                "- Promote each amendment: `shapes promote <id> --reason 'implemented'`\n\n"
+                "IMPORTANT: Do NOT modify any existing files in `.shapes/shapes/` or "
+                "`.shapes/constraints/`. Only create new amendments in `.shapes/amendments/`. "
+                "Do NOT modify CLAUDE.md.\n"
                 "</system_instructions>"
             )
             full_instruction = full_instruction + shapes_appendix
