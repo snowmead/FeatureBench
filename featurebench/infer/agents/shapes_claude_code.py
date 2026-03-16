@@ -172,85 +172,136 @@ shapes doctor                                           # Validate store integri
 """
 
 
-BOOTSTRAP_PROMPT = r"""You are analyzing a Python project to create a deep semantic map of its architecture, patterns, and invariants using the Shapes specification.
+BOOTSTRAP_PROMPT = r"""You are analyzing a software project to create a complete semantic map of its architecture using the Shapes specification.
 
 The `shapes` CLI is installed at /usr/local/bin/shapes. Read the skill instructions at /testbed/.shapes-skill.md and the spec reference at /testbed/.shapes-spec-reference.md.
 
-Your goal is to create a shapes store that would allow a developer who has NEVER seen this codebase to understand:
-- What each module/component does and WHY it exists
-- How data flows through the system
-- What patterns and invariants MUST be upheld when making changes
-- Where the key function boundaries and interfaces are
-- What coding conventions the project follows
+Your goal: create a shapes store so thorough that a developer who has NEVER seen this codebase can understand the full architecture — from system-level design down to individual public APIs — without reading a single line of source code.
+
+## Shape Hierarchy
+
+Model the project as a DAG (directed acyclic graph) using these levels:
+
+### Level 1: System (the whole project)
+- kind: system — one shape for the entire project
+- Intent: what the project does, who it's for, why it exists
+- Realization: README, config files, main entry points
+- Children: all Level 2 shapes
+
+### Level 2: Modules and Services (major subsystems)
+- kind: module — library packages/subsystems
+- kind: service — independently running components (API server, worker, CLI)
+- Intent: what this subsystem does, its responsibility boundary
+- Realization: package directory, __init__.py, key entry files
+- Children: Level 3 shapes
+
+### Level 3: Components and Features (concerns within a module)
+- kind: component — key classes, abstractions, internal mechanisms
+- kind: feature — user-facing capabilities spanning multiple components
+- Intent: what this does, its contract with the rest of the module
+- Realization: specific source files
+- Evidence: specific test files (exact paths, not directories)
+
+### Level 4: Interfaces and Boundaries (cross-module contracts)
+- kind: interface — public API surfaces that OTHER modules depend on
+- kind: boundary — deliberate separations between subsystems
+- Intent: what this interface guarantees, who depends on it
+- Realization: files that define the interface (role: primary) + files that consume it (role: supporting)
+- These are the MOST IMPORTANT shapes — they capture "if you change X, check Y"
+
+### Level 5: Workflows (end-to-end flows)
+- kind: workflow — data or control flows spanning multiple modules
+- Can have multiple parents (DAG structure)
+- Intent: what the flow accomplishes end-to-end, the sequence of steps
+- Realization: all files involved in the flow path
 
 ## Process
 
-1. **Deep exploration**: Read README, pyproject.toml/setup.py, directory structure, AND key source files in each major module. Read at least 2-3 core source files per module to understand patterns.
+1. **Deep exploration**:
+   - Read README, package config (pyproject.toml/setup.py/package.json/Cargo.toml)
+   - Map directory structure
+   - Read key source files in each major module (at least 2-3 per module)
+   - Identify the project's public APIs and entry points
 
 2. **Initialize**: Run `shapes init --name <project-name>`
 
-3. **Create architecture shapes** (kind: system, service, module):
+3. **Create Level 1 — System shape**:
    - One system shape for the project root
-   - Module shapes for each major package/subsystem
-   - Edit YAML: fill intent.summary (WHY), goals, non_goals
-   - Add realization bindings for SOURCE files only (not test files)
-   - Set parent-child relationships
+   - Fill intent.summary, goals, non_goals
+   - Realization: top-level config and entry point files
 
-4. **Create component shapes** (kind: component, interface):
-   - Key classes and abstractions within each module
-   - Public API surfaces and their contracts
-   - Critical internal components that enforce invariants
-   - Edit YAML: include realization bindings to specific source files/classes
+4. **Create Level 2 — Module/Service shapes**:
+   - One shape per top-level package or deployable unit
+   - Fill intent with what each subsystem does and its boundaries
+   - Realization: package directory and key files
+   - Set parent to system shape
 
-5. **Create pattern constraints** (kind: invariant, policy):
-   - Error handling patterns (how does this project handle/propagate errors?)
-   - Import conventions (lazy imports? conditional? star imports?)
-   - Naming conventions (snake_case functions, CamelCase classes, prefixes?)
-   - Testing patterns (fixtures, mocking approach, test organization)
-   - Type annotation patterns (strict typing? optional? runtime checked?)
+5. **Create Level 3 — Component shapes for ALL public APIs**:
+   - For each module, identify ALL public classes, key functions, and abstractions
+   - Create a component shape for each significant public API
+   - Fill intent with what each component does and its contract
+   - Realization: specific source files that implement it
+   - Set parent to owning module shape
 
-6. **Create data flow constraints** (kind: invariant):
-   - Input validation patterns (where and how is input validated?)
-   - State management (mutable vs immutable, thread safety patterns)
-   - Serialization/deserialization contracts
-   - Configuration loading patterns
+6. **Create Level 4 — Interface shapes for cross-module boundaries**:
+   - Trace the import graph: `grep -rn "from <module> import" /testbed/ --include="*.py" | head -30`
+   - For each module, identify which functions/classes are imported by OTHER modules
+   - Create interface shapes for critical cross-module APIs (standalone shapes)
+   - In each interface shape:
+     - intent.goals: list the key exports and who uses them
+       e.g., "Key exports: create_span (used by processor/base.py, fluent.py)"
+     - realization with role: primary for the file defining the interface
+     - realization with role: supporting for files that CONSUME this interface
+   - Set parent to owning module shape
 
-7. **Create boundary constraints** (kind: requirement):
-   - Module boundaries that must not be crossed (no circular imports, layer violations)
-   - Public vs private API boundaries
-   - Backward compatibility requirements
+7. **Create Level 5 — Workflow shapes for end-to-end flows**:
+   - Identify the project's main data/control flows (request handling, data pipelines, CLI flows)
+   - Look in: README, docstrings, entry points (main(), CLI commands, API endpoints)
+   - Create workflow shapes that span multiple modules
+   - Realization: all files touched in the flow, in order
+   - Set parents to ALL modules the workflow touches (DAG)
 
-8. **Map test files to shapes via evidence**:
-   - For each module/component shape, find its corresponding test files
-   - Edit the shape YAML to add evidence entries pointing to test files:
-     ```yaml
-     evidence:
-       - id: tests-<shape-name>
-         type: test_report
-         uris:
-           - tests/test_module.py
-           - tests/subdir/test_feature.py
-     ```
-   - This is critical — it allows developers to find which tests verify which modules
-   - Test files go in `evidence` (proof the shape works), NOT in `realization` (implementation)
+8. **Create constraints at every level**:
+   - **System-level** (kind: policy/invariant):
+     - Coding conventions (naming, formatting, docstrings)
+     - Error handling patterns (custom exceptions, error propagation)
+     - Import conventions (lazy imports, conditional imports, star imports)
+     - Type annotation patterns
+   - **Module-level** (kind: requirement/invariant):
+     - Module boundaries (what must not cross)
+     - Public vs private API rules
+     - Backward compatibility requirements
+   - **Component-level** (kind: invariant):
+     - Behavioral contracts (thread safety, immutability, serialization guarantees)
+     - Function signature conventions
+   - **Interface-level** (kind: requirement):
+     - What callers must handle (exceptions, null values)
+     - What implementations must provide
 
-9. **Promote all entities**: `shapes promote <id> --reason "..."` with specific reasons
+9. **Map evidence (exact test file paths)**:
+   - For each shape, find the EXACT test files that verify it:
+     `find /testbed -name "test_*.py" -o -name "*_test.py" | grep <module_name>`
+   - Evidence entries MUST use exact file paths, NOT directories:
+     CORRECT: tests/tracing/test_span.py
+     WRONG: tests/tracing/
+   - Add as evidence with type: test_report
+   - Test files go in evidence (proof the shape works), NOT in realization (implementation)
 
-10. **Validate**: Run `shapes doctor`
+10. **Promote all entities**: `shapes promote <id> --reason "..."` with specific reasons
+
+11. **Validate**:
+    - Run `shapes doctor`
+    - Run `grep -rn "TODO" .shapes/` and fix ALL remaining TODOs
+    - Repeat until zero TODOs remain
 
 ## Guidelines
-- Create 20-40 shapes and 10-20 constraints for thorough coverage
-- Every shape MUST have realization bindings (source file paths) so the developer knows WHERE to look
-- Every shape SHOULD have evidence entries mapping to its test files
-- Every constraint MUST have a concrete rule description, not vague guidelines
-- Focus on what a developer needs to know to make CORRECT changes, not just architectural overview
+- Create 40-60 shapes and 15-25 constraints for thorough coverage
+- Every shape MUST have realization bindings with specific file paths
+- Every shape SHOULD have evidence with exact test file paths
+- Every constraint MUST have a concrete rule, not a vague description
+- Interface shapes are the most valuable — invest time in tracing cross-module dependencies
+- The DAG should be navigable: from any shape, traverse up (parents) for context and down (children) for details
 - Do NOT attempt to solve any bugs or add features — this is purely structural analysis
-- CRITICAL: After completing all shapes and constraints, verify NO TODO placeholders remain:
-  1. Run: `grep -rn "TODO" .shapes/shapes/ .shapes/constraints/`
-  2. For EVERY file listed, read it and replace all TODO fields with actual content
-  3. Repeat until `grep -rn "TODO" .shapes/` returns zero results
-  Do NOT promote any entity that still has TODO fields.
-  Run this verification one final time before `shapes doctor`.
 """
 
 
