@@ -308,40 +308,42 @@ Model the project as a DAG (directed acyclic graph) using these levels:
 CLAUDE_MD_CONTENT = r"""# Project Architecture (Shapes)
 
 This project's architecture is mapped in `.shapes/` as a 5-level DAG:
+system → module/service → component/feature → interface/boundary → workflow
 
-## Shape Hierarchy
-- **system** — the whole project
-- **module/service** — major subsystems
-- **component/feature** — classes, abstractions, public APIs
-- **interface/boundary** — cross-module contracts (MOST IMPORTANT — shows who depends on what)
-- **workflow** — end-to-end data/control flows
+## Navigating the Architecture
 
-## Key Commands
 ```bash
-shapes tree                          # Full hierarchy
-shapes show <id>                     # Details: intent, realization, evidence, constraints
-shapes show <id> --format yaml       # Machine-readable
-shapes list --kind constraint        # All project-wide invariants
-shapes new amendment '<desc>' --shape <id>  # Propose a change to a shape
-shapes promote <id> --reason '...'   # Mark amendment as implemented
+# See the full hierarchy with files, tests, and constraints at every node:
+shapes tree --detail
+
+# Understand everything that affects a shape (upstream constraints + evidence):
+shapes ancestors <id>
+
+# See what depends on a shape (downstream callers + overlapping files):
+shapes deps <id>
+
+# Get full details of any shape or constraint:
+shapes show <id>
+shapes show <id> --format yaml
+
+# List all constraints/invariants:
+shapes list --kind constraint
 ```
 
-## How to Work with Shapes
+## Working with Shapes
 
-**Before coding**, propose amendments targeting all affected shapes and constraints:
+**Before coding**, explore the DAG to understand what you're working with:
+1. `shapes tree --detail` — see files, tests, and constraints at every level
+2. `shapes ancestors <id>` — see all upstream constraints that apply
+3. `shapes deps <id>` — see what depends on the shapes you'll modify
+
+**Plan with amendments** targeting all affected shapes:
 ```bash
-# Single amendment can target multiple shapes and constraints:
-shapes new amendment 'add iceberg reader' --shape io-module --shape dataframe-core --constraint serialization-pattern
+shapes new amendment '<description>' --shape <id1> --shape <id2> --constraint <id3>
 ```
-Edit the YAML: set intent (what/why), realization (files to change), affected_paths.
 
-**During coding**, follow your amendments and check:
-- **realization** bindings → source files to modify
-- **evidence** entries → test files to run (type: test_report, exact file paths)
-- **interface shapes** → role:supporting files are callers that depend on your changes
-- **constraints** → rules you must follow
-
-**After coding**, verify callers and tests, then promote your amendments.
+**During coding**, follow constraints and check interface callers.
+**After coding**, run tests from evidence entries, then promote amendments.
 
 Do NOT modify existing shapes/constraints. Only create amendments.
 """
@@ -385,40 +387,30 @@ class ShapesClaudeCodeAgent(ClaudeCodeAgent):
                 "This project has a `.shapes/` directory with its architecture mapped as a DAG. "
                 "You MUST use the `shapes` CLI to explore it and plan your work through amendments.\n\n"
                 "### Step 1: Explore the Architecture\n"
-                "1. Run `shapes tree` to see the full shape hierarchy\n"
-                "2. Run `shapes list --kind constraint` to see all invariants and patterns\n"
-                "3. For shapes relevant to your task, run `shapes show <id>` to see:\n"
-                "   - intent, realization (source files), evidence (test files), constraints\n"
-                "4. For interface shapes, check `role: supporting` in realization — "
-                "these are files that DEPEND ON this shape's exports\n\n"
+                "1. Run `shapes tree --detail` to see the full hierarchy with files, tests, "
+                "and constraints at every node\n"
+                "2. For shapes relevant to your task, run `shapes ancestors <id>` to see all "
+                "upstream constraints that apply (from the shape up to the project root)\n"
+                "3. Run `shapes deps <id>` to see what DEPENDS on that shape — other shapes "
+                "with overlapping files, callers, and all inherited constraints\n"
+                "4. Run `shapes show <id>` for full details of any specific shape or constraint\n\n"
                 "### Step 2: Propose Amendments (BEFORE writing any code)\n"
                 "Identify ALL shapes and constraints affected by your task, then create amendments:\n"
                 "```bash\n"
-                "# A single amendment can target multiple shapes and constraints:\n"
                 "shapes new amendment '<description>' --shape <id1> --shape <id2> --constraint <id3>\n"
                 "```\n"
-                "Then edit the amendment YAML to fill in:\n"
-                "- intent.summary: what change is needed and why\n"
-                "- intent.goals: specific changes you plan to make\n"
-                "- affected_paths: which fields of the shapes are changing\n"
-                "- realization: files you will create or modify\n\n"
-                "You may create one broad amendment targeting all affected shapes, or multiple "
-                "focused amendments for different aspects of the work. "
-                "This is your implementation plan grounded in the project architecture.\n\n"
+                "Edit the amendment YAML to fill in intent (what/why), realization (files to modify).\n\n"
                 "### Step 3: Implement Based on Your Amendments\n"
-                "Work through your amendments one at a time. For each:\n"
-                "- Read the target shape's constraints and follow them\n"
-                "- Modify the files listed in your amendment's realization\n"
-                "- Check interface shapes — if you modify an exported function, "
-                "verify the `role: supporting` callers still work\n"
-                "- Check evidence entries to find the right test files to validate against\n\n"
+                "For each amendment:\n"
+                "- Follow the constraint rules shown by `shapes ancestors`\n"
+                "- Check `shapes deps` for callers — if you modify an export, verify callers still work\n"
+                "- Use evidence entries (shown in `shapes tree --detail`) to find the right test files\n\n"
                 "### Step 4: Verify\n"
                 "- Run tests from evidence entries for each affected shape\n"
-                "- Check that interface callers still work\n"
-                "- Promote each amendment: `shapes promote <id> --reason 'implemented'`\n\n"
-                "IMPORTANT: Do NOT modify any existing files in `.shapes/shapes/` or "
-                "`.shapes/constraints/`. Only create new amendments in `.shapes/amendments/`. "
-                "Do NOT modify CLAUDE.md.\n"
+                "- Check that callers from `shapes deps` aren't broken\n"
+                "- Promote amendments: `shapes promote <id> --reason 'implemented'`\n\n"
+                "IMPORTANT: Do NOT modify existing files in `.shapes/shapes/` or `.shapes/constraints/`. "
+                "Only create new amendments. Do NOT modify CLAUDE.md.\n"
                 "</system_instructions>"
             )
             full_instruction = full_instruction + shapes_appendix
